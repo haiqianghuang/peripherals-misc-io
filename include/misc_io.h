@@ -41,7 +41,7 @@ enum misc_event {
 
 /* hw_ctx for misc_io_alloc(): */
 struct misc_gpiod_ctx {
-    const char *chip_name;       /* e.g. "gpiochip0" */
+    const char *chip_name;       /* e.g. "gpiochip0" or "/dev/gpiochip0" */
     unsigned int line_offset;    /* line offset within chip */
     const char *consumer;        /* optional, can be NULL */
 };
