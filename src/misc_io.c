@@ -25,6 +25,7 @@ static uint64_t now_ms_monotonic(void)
 }
 
 static enum misc_event value_to_event(struct misc_dev *dev, int raw_value);
+static struct gpiod_chip *open_gpiochip_compat(const char *chip_name);
 
 /* ---- misc_dev ---- */
 
@@ -164,8 +165,8 @@ static int request_line_output(struct misc_dev *dev, const char *consumer, int d
 static int read_raw_value(struct misc_dev *dev)
 {
 #if defined(LIBGPIOD_V2)
-    enum gpiod_line_value v = gpiod_line_request_get_value(dev->req, dev->offset);
-    if ((int)v < 0)
+    int v = gpiod_line_request_get_value(dev->req, dev->offset);
+    if (v < 0)
         return -errno;
     return (v == GPIOD_LINE_VALUE_ACTIVE) ? 1 : 0;
 #else
@@ -195,6 +196,40 @@ static enum misc_event value_to_event(struct misc_dev *dev, int raw_value)
     /* active_logic defines which raw level maps to ACTIVE */
     int active_raw = (dev->active_logic == MISC_ACTIVE_HIGH) ? 1 : 0;
     return (raw_value == active_raw) ? MISC_EV_ACTIVE : MISC_EV_INACTIVE;
+}
+
+static struct gpiod_chip *open_gpiochip_compat(const char *chip_name)
+{
+    if (!chip_name || chip_name[0] == '\0') {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    if (chip_name[0] == '/')
+        return gpiod_chip_open(chip_name);
+
+#if defined(LIBGPIOD_V2)
+    /*
+     * libgpiod v2 core C API opens chips by device path. Accept a legacy
+     * "gpiochipN" name from callers and normalize it to /dev/gpiochipN.
+     */
+    size_t path_len = strlen("/dev/") + strlen(chip_name) + 1;
+    char *chip_path = malloc(path_len);
+    struct gpiod_chip *chip;
+
+    if (!chip_path) {
+        errno = ENOMEM;
+        return NULL;
+    }
+
+    snprintf(chip_path, path_len, "/dev/%s", chip_name);
+    chip = gpiod_chip_open(chip_path);
+    free(chip_path);
+
+    return chip;
+#else
+    return gpiod_chip_open_by_name(chip_name);
+#endif
 }
 
 static void *trigger_thread_fn(void *arg)
@@ -326,14 +361,8 @@ struct misc_dev *misc_io_alloc(enum misc_type type, enum misc_dir dir, void *hw_
 
 #if defined(LIBGPIOD_V2)
     dev->offset = ctx->line_offset;
-    if (ctx->chip_name[0] == '/') {
-        dev->chip = gpiod_chip_open(ctx->chip_name);
-    } else {
-        dev->chip = gpiod_chip_open_lookup(ctx->chip_name);
-    }
-#else
-    dev->chip = gpiod_chip_open_by_name(ctx->chip_name);
 #endif
+    dev->chip = open_gpiochip_compat(ctx->chip_name);
     if (!dev->chip) {
         misc_io_free(dev);
         return NULL;
